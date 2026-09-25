@@ -1235,20 +1235,32 @@ static void present(float fade)
 /* terminal setup, input, main loop                                    */
 /* ------------------------------------------------------------------ */
 
-static struct termios g_orig_tio;
+static struct termios g_orig_tio, g_raw_tio;
 static int g_have_tty_in;
 static int g_anykey;
 static volatile sig_atomic_t g_quit, g_resized;
 
+/* Both of these also run inside signal handlers, so they only use write() and tcsetattr(). */
 static void term_restore(void)
 {
     /* reset colors, end sync update, re-enable wrap and cursor, leave alt screen */
-    const char *s = "\x1b[0m\x1b[?2026l\x1b[?7h\x1b[?25h\x1b[?1049l";
-    if (write(STDOUT_FILENO, s, strlen(s)) < 0) {
+    static const char s[] = "\x1b[0m\x1b[?2026l\x1b[?7h\x1b[?25h\x1b[?1049l";
+    if (write(STDOUT_FILENO, s, sizeof s - 1) < 0) {
         /* nothing sensible left to do */
     }
     if (g_have_tty_in)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_tio);
+}
+
+static void term_grab(void)
+{
+    /* alt screen, hide cursor, no auto-wrap */
+    static const char s[] = "\x1b[?1049h\x1b[?25l\x1b[?7l";
+    if (g_have_tty_in)
+        tcsetattr(STDIN_FILENO, TCSANOW, &g_raw_tio);  /* TCSANOW: keep keys typed during startup */
+    if (write(STDOUT_FILENO, s, sizeof s - 1) < 0) {
+        /* the next frame will try again */
+    }
 }
 
 static void on_signal(int sig)
@@ -1259,14 +1271,26 @@ static void on_signal(int sig)
         g_quit = 1;
 }
 
+/* Ctrl-Z: hand the terminal back to the shell, stop, and take it again after "fg". */
+static void on_suspend(int sig)
+{
+    (void)sig;
+    int saved = errno;
+    term_restore();
+    kill(getpid(), SIGSTOP);        /* SIGSTOP cannot be caught: this really stops */
+    term_grab();
+    g_resized = 1;                  /* redraw everything, the size may have changed */
+    errno = saved;
+}
+
 static void term_setup(void)
 {
     if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &g_orig_tio) == 0) {
-        struct termios raw = g_orig_tio;
-        raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);  /* keep ISIG: Ctrl-C still works */
-        raw.c_cc[VMIN] = 0;                         /* read() never blocks */
-        raw.c_cc[VTIME] = 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &raw);     /* keep keys typed during startup */
+        g_raw_tio = g_orig_tio;
+        g_raw_tio.c_lflag &= ~(tcflag_t)(ICANON | ECHO);  /* keep ISIG: Ctrl-C still works */
+        g_raw_tio.c_iflag &= ~(tcflag_t)IXON;             /* Ctrl-S must not freeze the output */
+        g_raw_tio.c_cc[VMIN] = 0;                         /* read() never blocks */
+        g_raw_tio.c_cc[VTIME] = 0;
         g_have_tty_in = 1;
     }
     atexit(term_restore);
@@ -1276,13 +1300,14 @@ static void term_setup(void)
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGQUIT, &sa, NULL);  /* Ctrl-\ */
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGHUP, &sa, NULL);   /* the terminal window was closed */
     sigaction(SIGWINCH, &sa, NULL);
+    sa.sa_handler = on_suspend;
+    sigaction(SIGTSTP, &sa, NULL);
 
-    /* alt screen, hide cursor, no auto-wrap */
-    outs("\x1b[?1049h\x1b[?25l\x1b[?7l");
-    flush_out();
+    term_grab();
 }
 
 static void alloc_buffers(void)
