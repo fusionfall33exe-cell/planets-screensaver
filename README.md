@@ -30,7 +30,7 @@ None of the planets use image textures. Their surfaces are computed pixel by pix
 
 A terminal has no pixels, so each character cell shows two: the upper half block `▀` with a 24-bit text color for the top pixel and a background color for the bottom one. Only cells that changed since the last frame are sent, and the rendering is split across up to 8 threads, so it holds 60 fps even in a fullscreen terminal.
 
-All of this is one C11 file of about 1,500 lines that needs only libc, libm and pthreads. It has been checked with AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer.
+All of this is one C11 file of about 1,500 lines that needs only libc, libm and pthreads. `make test` checks it with AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer, and GitHub Actions runs those tests with gcc and clang on every push.
 
 ## Install
 

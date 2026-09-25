@@ -1,2 +1,5 @@
 planets
 *.o
+tests/*_test
+tests/planets_san
+tests/render_tsan

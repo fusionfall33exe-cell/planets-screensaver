@@ -1,0 +1,41 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ubuntu:
+    name: ${{ matrix.cc }} on Ubuntu
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with warnings as errors
+        run: make CC=${{ matrix.cc }} CFLAGS="-std=c11 -O2 -pthread -Wall -Wextra -Wpedantic -Wshadow -Werror"
+
+      - name: Memory and undefined behavior tests
+        run: make test-memory CC=${{ matrix.cc }}
+
+      - name: Thread tests
+        run: make test-threads CC=${{ matrix.cc }}
+
+  debian:
+    name: gcc on Debian Trixie
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install build tools
+        run: apt-get update && apt-get install -y --no-install-recommends build-essential procps
+
+      - uses: actions/checkout@v4
+
+      - name: Build with warnings as errors
+        run: make CFLAGS="-std=c11 -O2 -pthread -Wall -Wextra -Wpedantic -Wshadow -Werror"
+
+      - name: Memory and undefined behavior tests
+        run: make test-memory
