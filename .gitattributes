@@ -1,0 +1,4 @@
+# Source is built on Linux: always LF, whatever git's autocrlf says.
+* text=auto eol=lf
+# Windows batch files need CRLF.
+*.cmd text eol=crlf
