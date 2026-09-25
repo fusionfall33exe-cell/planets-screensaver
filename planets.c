@@ -1240,16 +1240,39 @@ static int g_have_tty_in;
 static int g_anykey;
 static volatile sig_atomic_t g_quit, g_resized;
 
-/* Both of these also run inside signal handlers, so they only use write() and tcsetattr(). */
+/*
+ * The terminal helpers below also run inside signal handlers, so they only
+ * use write() and tcsetattr(). A signal arriving while the terminal is busy
+ * interrupts those calls, so they retry: losing the restore sequence would
+ * leave the terminal stuck in the alternate screen.
+ */
+static void write_all(const char *s, size_t n)
+{
+    while (n > 0) {
+        ssize_t w = write(STDOUT_FILENO, s, n);
+        if (w < 0) {
+            if (errno == EINTR)
+                continue;
+            return;                 /* the terminal is gone: nothing left to do */
+        }
+        s += w;
+        n -= (size_t)w;
+    }
+}
+
+static void set_tty(int when, const struct termios *tio)
+{
+    while (tcsetattr(STDIN_FILENO, when, tio) < 0 && errno == EINTR)
+        ;
+}
+
 static void term_restore(void)
 {
     /* reset colors, end sync update, re-enable wrap and cursor, leave alt screen */
     static const char s[] = "\x1b[0m\x1b[?2026l\x1b[?7h\x1b[?25h\x1b[?1049l";
-    if (write(STDOUT_FILENO, s, sizeof s - 1) < 0) {
-        /* nothing sensible left to do */
-    }
+    write_all(s, sizeof s - 1);
     if (g_have_tty_in)
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_tio);
+        set_tty(TCSAFLUSH, &g_orig_tio);
 }
 
 static void term_grab(void)
@@ -1257,10 +1280,8 @@ static void term_grab(void)
     /* alt screen, hide cursor, no auto-wrap */
     static const char s[] = "\x1b[?1049h\x1b[?25l\x1b[?7l";
     if (g_have_tty_in)
-        tcsetattr(STDIN_FILENO, TCSANOW, &g_raw_tio);  /* TCSANOW: keep keys typed during startup */
-    if (write(STDOUT_FILENO, s, sizeof s - 1) < 0) {
-        /* the next frame will try again */
-    }
+        set_tty(TCSANOW, &g_raw_tio);   /* TCSANOW: keep keys typed during startup */
+    write_all(s, sizeof s - 1);
 }
 
 static void on_signal(int sig)
