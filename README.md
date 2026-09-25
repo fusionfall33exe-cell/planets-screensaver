@@ -30,6 +30,8 @@ The tour loops forever until you quit or close the terminal.
 ## Build and install (Linux / WSL)
 
 ```bash
+git clone https://github.com/fusionfall33exe-cell/planets-screensaver.git
+cd planets-screensaver
 make            # build ./planets
 make install    # install the command "Planets" to ~/.local/bin
 ```
@@ -56,3 +58,7 @@ Keys: `q`/`Esc` quit, `→`/`n` next, `←`/`b` previous, `space` pause,
 Works best in a terminal with 24-bit color and a font where `▀` fills the
 top half of the cell (Windows Terminal, GNOME Terminal, Konsole, kitty,
 Alacritty, iTerm2, ...).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
