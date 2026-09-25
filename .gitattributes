@@ -2,3 +2,6 @@
 * text=auto eol=lf
 # Windows batch files need CRLF.
 *.cmd text eol=crlf
+# Screenshots are images, never text.
+*.png binary
+*.gif binary

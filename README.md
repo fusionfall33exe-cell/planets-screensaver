@@ -1,45 +1,55 @@
-# planets — the solar system in your terminal
+# Planets
 
-A screensaver that tours the solar system right inside your terminal, written
-in plain C (just libc and libm).
+The solar system, ray traced in real time, right inside your terminal.
 
-Every frame is ray traced per pixel:
+Planets is a screensaver written in pure C. It renders every frame with its own little ray tracer and draws it using nothing but colored text characters. No graphics library, no GPU, no image files. Start it, lean back, and watch it glide past every planet from Mercury to Neptune, over and over, until you close the window.
 
-- perfectly round planets with anti-aliased edges
-- procedural surfaces: continents, clouds and city lights on Earth, Jupiter's
-  flowing bands and Great Red Spot, craters on Mercury and the Moon
-- glowing atmospheres and see-through rings with shadows on them
-- moons that orbit and cast shadows on their planet
-- a slowly drifting camera, a Milky Way sky, and crossfades between scenes
+<p align="center">
+  <img src="docs/screenshots/solar-system.gif" width="85%" alt="The solar system with the glowing Sun and the planets moving along their orbits">
+</p>
 
-It draws with 24-bit ANSI colors. Each character cell holds two pixels (the
-`▀` glyph with separate foreground and background colors), and only cells
-that changed are redrawn. Rendering is split across up to 8 CPU cores, so it
-holds 60 fps even in a fullscreen terminal.
+<p align="center">
+  <img src="docs/screenshots/earth.png" width="49%" alt="Earth with clouds, city lights on the night side, and the Moon">
+  <img src="docs/screenshots/jupiter.png" width="49%" alt="Jupiter with its cloud bands and two moons casting shadows">
+</p>
+<p align="center">
+  <img src="docs/screenshots/saturn.png" width="49%" alt="Saturn with its rings, and Titan">
+  <img src="docs/screenshots/neptune.png" width="49%" alt="Neptune with white clouds, and Triton">
+</p>
+<p align="center"><sub>Real terminal output: every square is half of one character.</sub></p>
 
-| # | Scene | # | Scene |
-|---|---|---|---|
-| 1 | Mercury | 6 | Saturn and Titan |
-| 2 | Venus | 7 | Uranus, on its side |
-| 3 | Earth and the Moon | 8 | Neptune and Triton |
-| 4 | Mars, Phobos, Deimos | 9 | The whole solar system |
-| 5 | Jupiter and its four big moons | | |
+## The tour
 
-The tour loops forever until you quit or close the terminal.
+Mercury → Venus → Earth → Mars → Jupiter → Saturn → Uranus → Neptune → Solar system
 
-## Build and install (Linux / WSL)
+## How it works
+
+Every frame is ray traced on the CPU. For each pixel, Planets shoots a ray into the scene and tests it against spheres for the planets and moons, and against flat rings for Saturn and Uranus. Whatever it hits gets lit by the Sun, and shadow rays decide what lies in shade. That is how the moons cast little black dots onto Jupiter, and how Saturn throws its shadow across its own rings. Where two objects meet, the edge pixels get four extra rays, so the outlines stay smooth.
+
+None of the planets use image textures. Their surfaces are computed pixel by pixel from 3D noise: continents, clouds and ice caps on Earth, flowing bands and storms on the gas giants, and bump-mapped craters on Mercury and the Moon.
+
+A terminal has no pixels, so each character cell shows two: the upper half block `▀` with a 24-bit text color for the top pixel and a background color for the bottom one. Only cells that changed since the last frame are sent, and the rendering is split across up to 8 threads, so it holds 60 fps even in a fullscreen terminal.
+
+All of this is one C11 file of about 1,500 lines that needs only libc, libm and pthreads. It has been checked with AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer.
+
+## Install
+
+You need Linux (tested on Debian Trixie in WSL), gcc and make, and a terminal with 24-bit color. Windows Terminal, GNOME Terminal, Konsole, kitty and Alacritty all work.
 
 ```bash
+sudo apt install build-essential git
 git clone https://github.com/fusionfall33exe-cell/planets-screensaver.git
 cd planets-screensaver
-make            # build ./planets
-make install    # install the command "Planets" to ~/.local/bin
+make && make install
 ```
 
-On Windows with WSL, put this folder on your `PATH`: `Planets.cmd` then starts
-the installed program inside WSL, so `Planets` works in cmd and PowerShell too.
+That installs the command `Planets` to `~/.local/bin`. If your shell can't find it yet, log out and back in.
+
+On Windows, clone it to the Windows side, run `make && make install` there from WSL, and add the folder to your `PATH`. `Planets.cmd` then starts it from cmd and PowerShell as well.
 
 ## Usage
+
+Just run `Planets`. The arrow keys (or `n` and `b`) switch planets, `Space` pauses, `+` and `-` change the speed, and `q` or `Esc` quits. Press `m` for ASCII art and `c` for 256 colors.
 
 ```
 Planets [-t SEC] [-s N] [-r] [-f FPS] [-a] [-2] [-x]
@@ -52,13 +62,13 @@ Planets [-t SEC] [-s N] [-r] [-f FPS] [-a] [-2] [-x]
   -x       screensaver mode: any key quits
 ```
 
-Keys: `q`/`Esc` quit, `→`/`n` next, `←`/`b` previous, `space` pause,
-`m` ASCII/blocks, `c` 256/24-bit colors, `+`/`-` speed.
+It also works as a real screensaver in tmux. With these two lines in `~/.tmux.conf`, the planets come out after five idle minutes and any key brings your session back:
 
-Works best in a terminal with 24-bit color and a font where `▀` fills the
-top half of the cell (Windows Terminal, GNOME Terminal, Konsole, kitty,
-Alacritty, iTerm2, ...).
+```
+set -g lock-after-time 300
+set -g lock-command "Planets -x"
+```
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
