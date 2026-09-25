@@ -4,7 +4,7 @@
 # Install with:  make install    (global command "Planets" in ~/.local/bin)
 
 CC      := gcc
-CFLAGS  := -std=c11 -Wall -Wextra -O2
+CFLAGS  := -std=c11 -Wall -Wextra -O2 -pthread
 LDLIBS  := -lm
 TARGET  := planets
 NAME    := Planets

@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -33,6 +34,7 @@
 #define NCRATER  64
 #define MAXBODY  12
 #define MAXRING  2
+#define MAXTHREADS 8
 #define SKY_W    512                /* sky texture size (equirectangular) */
 #define SKY_H    256
 #define XFADE    1.5f               /* seconds of crossfade between scenes */
@@ -937,33 +939,79 @@ static const Scene g_scenes[] = {
 #define NSCENES ((int)(sizeof g_scenes / sizeof g_scenes[0]))
 
 /* Ray trace one scene at time t into g_color / g_id. */
-static void render_scene(int s, float t)
+static void trace_row(int y)
+{
+    for (int x = 0; x < g_pw; x++) {
+        int i = y * g_pw + x;
+        g_color[i] = trace(pixel_ray(x + 0.5f, y + 0.5f), &g_id[i]);
+    }
+}
+
+/* anti-aliasing: four more rays where different objects meet */
+static void smooth_row(int y)
 {
     static const float aa[4][2] = { { 0.375f, 0.125f }, { 0.875f, 0.375f },
                                     { 0.625f, 0.875f }, { 0.125f, 0.625f } };
+    for (int x = 0; x < g_pw; x++) {
+        int i = y * g_pw + x, id = g_id[i], dummy;
+        if (!((x > 0 && g_id[i - 1] != id) || (x + 1 < g_pw && g_id[i + 1] != id) ||
+              (y > 0 && g_id[i - g_pw] != id) || (y + 1 < g_ph && g_id[i + g_pw] != id)))
+            continue;
+        V3 sum = g_color[i];
+        for (int k = 0; k < 4; k++)
+            sum = add(sum, trace(pixel_ray(x + aa[k][0], y + aa[k][1]), &dummy));
+        g_color[i] = scale(sum, 0.2f);
+    }
+}
+
+/*
+ * Rows are split between threads: thread k does rows k, k + n, k + 2n, ...
+ * so the expensive rows through a planet are shared evenly. Every pixel only
+ * reads the scene and writes itself, so the threads never collide.
+ */
+static int g_nthreads = 1;
+
+typedef struct { int first, pass; } Job;
+
+static void *worker(void *arg)
+{
+    const Job *job = arg;
+    for (int y = job->first; y < g_ph; y += g_nthreads) {
+        if (job->pass == 0)
+            trace_row(y);
+        else
+            smooth_row(y);
+    }
+    return NULL;
+}
+
+static void run_pass(int pass)
+{
+    pthread_t th[MAXTHREADS];
+    Job job[MAXTHREADS];
+    int started[MAXTHREADS] = { 0 };
+    for (int k = 0; k < g_nthreads; k++)
+        job[k] = (Job){ k, pass };
+    for (int k = 1; k < g_nthreads; k++)
+        started[k] = pthread_create(&th[k], NULL, worker, &job[k]) == 0;
+    worker(&job[0]);                /* the main thread takes the first share */
+    for (int k = 1; k < g_nthreads; k++) {
+        if (started[k])
+            pthread_join(th[k], NULL);
+        else
+            worker(&job[k]);        /* no thread: do that share here */
+    }
+}
+
+static void render_scene(int s, float t)
+{
     g_time = t;
     g_nbody = g_nring = 0;
     g_point_light = 0;
     g_scenes[s].setup(t);
 
-    for (int y = 0; y < g_ph; y++)
-        for (int x = 0; x < g_pw; x++) {
-            int i = y * g_pw + x;
-            g_color[i] = trace(pixel_ray(x + 0.5f, y + 0.5f), &g_id[i]);
-        }
-
-    /* anti-aliasing: four more rays where different objects meet */
-    for (int y = 0; y < g_ph; y++)
-        for (int x = 0; x < g_pw; x++) {
-            int i = y * g_pw + x, id = g_id[i], dummy;
-            if (!((x > 0 && g_id[i - 1] != id) || (x + 1 < g_pw && g_id[i + 1] != id) ||
-                  (y > 0 && g_id[i - g_pw] != id) || (y + 1 < g_ph && g_id[i + g_pw] != id)))
-                continue;
-            V3 sum = g_color[i];
-            for (int k = 0; k < 4; k++)
-                sum = add(sum, trace(pixel_ray(x + aa[k][0], y + aa[k][1]), &dummy));
-            g_color[i] = scale(sum, 0.2f);
-        }
+    run_pass(0);                    /* all edges must be known before smoothing them */
+    run_pass(1);
 
     draw_stars();
     if (g_scenes[s].overlay)
@@ -1000,12 +1048,12 @@ static size_t g_out_len, g_out_cap;
 
 static void *xrealloc(void *p, size_t n)
 {
-    p = realloc(p, n);
-    if (!p) {
+    void *q = realloc(p, n ? n : 1);    /* realloc(p, 0) may free p: never ask for 0 */
+    if (!q) {
         fputs("Planets: out of memory\n", stderr);
         exit(1);
     }
-    return p;
+    return q;
 }
 
 static void out(const char *s, size_t n)
@@ -1218,7 +1266,7 @@ static void term_setup(void)
         raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);  /* keep ISIG: Ctrl-C still works */
         raw.c_cc[VMIN] = 0;                         /* read() never blocks */
         raw.c_cc[VTIME] = 0;
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+        tcsetattr(STDIN_FILENO, TCSANOW, &raw);     /* keep keys typed during startup */
         g_have_tty_in = 1;
     }
     atexit(term_restore);
@@ -1361,9 +1409,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    g_nthreads = cores < 1 ? 1 : cores > MAXTHREADS ? MAXTHREADS : (int)cores;
+
     srand((unsigned)time(NULL));
+    term_setup();                   /* first, so the screen goes dark right away */
     init_tables();
-    term_setup();
     alloc_buffers();
 
     float st = 0, pt = 0, speed = 1, age = 0;
