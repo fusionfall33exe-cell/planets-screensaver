@@ -54,6 +54,9 @@ check "ASCII mode, 256 colors, random order, 120 fps" 124
 pty "timeout --foreground -s INT 4 $BIN -t 0 -s 9 -f 0"
 check "stay on one scene, fps clamped to 1" 124
 
+pty "timeout --foreground -s INT 4 $BIN -t 0 -s 9 -f nan"
+check "-f nan: clamped to 1 fps, not a busy loop" 124 '[ "$(frames)" -le 6 ]'
+
 pty "timeout --foreground -s INT 4 $BIN -y 2.4 -t 1"
 check "-y: custom cell ratio" 124
 
@@ -88,6 +91,9 @@ check "[ and ] stay within the cell ratio limits" 0
 
 keys "sleep 1.5; printf '\e'; sleep 8"
 check "Esc quits" 0
+
+keys "sleep 1; for i in 1 2 3; do printf '\e'; sleep 0.01; printf '[C'; sleep 0.3; done; printf c; sleep 0.5; printf q" "-f 120"
+check "arrow key split over two reads does not quit" 0 "grep -aq '[34]8;5;' \$OUT"
 
 keys "sleep 1.5; printf k" "-x"
 check "-x: any key quits" 0

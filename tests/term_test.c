@@ -1,10 +1,14 @@
 /*
  * Terminal test: the helpers that adapt planets to the terminal it runs in
- * (cell shape, color mode, charset) and the text overlay on small screens.
+ * (cell shape, color mode, charset), the text overlay on small screens, and
+ * that planets come out round whatever the cell shape, and that output to a
+ * non-blocking stdout is not lost.
  */
 #define main planets_main
 #include "../planets.c"
 #undef main
+#include <fcntl.h>
+#include <sys/wait.h>
 
 static int errors;
 
@@ -90,12 +94,71 @@ static void test_hud(void)
     CHECK(g_nspans == 0);
 }
 
+/* Earth (body 0) is round on screen when its width in cells equals its height in cells times the cell ratio */
+static void test_round(void)
+{
+    static const float ratios[] = { 1.6f, 2.0f, 2.4f };
+    init_tables();
+    for (int ascii = 0; ascii <= 1; ascii++)
+        for (size_t k = 0; k < sizeof ratios / sizeof ratios[0]; k++) {
+            g_ascii = ascii;
+            g_cell_ratio = ratios[k];
+            set_size(100, 30);
+            render_scene(2, 0);         /* EARTH */
+            int x0 = g_pw, x1 = -1, y0 = g_ph, y1 = -1;
+            for (int y = 0; y < g_ph; y++)
+                for (int x = 0; x < g_pw; x++)
+                    if (g_id[y * g_pw + x] == 0) {
+                        x0 = x < x0 ? x : x0;
+                        x1 = x > x1 ? x : x1;
+                        y0 = y < y0 ? y : y0;
+                        y1 = y > y1 ? y : y1;
+                    }
+            float w = (float)(x1 - x0 + 1), h = (float)(y1 - y0 + 1) / (ascii ? 1 : 2);   /* in cells */
+            CHECK(x1 >= 0 && fabsf(w / (h * ratios[k]) - 1) < 0.05f);
+        }
+}
+
+/* stdout made non-blocking (a parent shares it) with a slow reader: every byte still arrives */
+static void test_nonblocking_write(void)
+{
+    static char big[1 << 20];
+    int p[2], saved = dup(STDOUT_FILENO), status = -1;
+    if (pipe(p) < 0 || saved < 0) {
+        CHECK(!"pipe");
+        return;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(p[1]);
+        char b[4096];
+        long got = 0;
+        ssize_t r;
+        while ((r = read(p[0], b, sizeof b)) > 0) {
+            got += r;
+            usleep(50);
+        }
+        _exit(got == (long)sizeof big ? 0 : 1);
+    }
+    close(p[0]);
+    fcntl(p[1], F_SETFL, O_NONBLOCK);
+    dup2(p[1], STDOUT_FILENO);
+    close(p[1]);
+    CHECK(write_all(big, sizeof big) == 0);
+    dup2(saved, STDOUT_FILENO);         /* closes the pipe: the reader sees the end */
+    close(saved);
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 int main(void)
 {
     test_cell_ratio();
     test_colors();
     test_locale();
     test_hud();
+    test_round();
+    test_nonblocking_write();
     printf("term test: %d errors\n", errors);
     return errors != 0;
 }

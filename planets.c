@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -67,7 +68,7 @@ static V3 norm(V3 a)
 }
 
 static V3 mix(V3 a, V3 b, float t) { return add(a, scale(sub(b, a), t)); }
-static float clampf(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
+static float clampf(float x, float lo, float hi) { return x >= lo ? (x <= hi ? x : hi) : lo; }   /* NaN gives lo */
 
 /* smoothstep; also works "backwards" when e0 > e1 */
 static float smooth(float e0, float e1, float x)
@@ -1031,7 +1032,7 @@ static Span g_spans[4];
 static int  g_nspans;
 
 /*
- * Text overlay that fades with alpha; negative x/y count from the right/bottom.
+ * Text overlay that fades with alpha; a negative y counts from the bottom.
  * Text that does not fit is cut to "...", and a row that is off screen, too
  * narrow or already taken (title and fact on a 3-row terminal) gets nothing.
  */
@@ -1039,7 +1040,6 @@ static void hud(int x, int y, V3 col, float alpha, const char *text)
 {
     if (g_nspans >= (int)(sizeof g_spans / sizeof g_spans[0]))
         return;
-    x = x < 0 ? g_cols + x : x;
     y = y < 0 ? g_rows + y : y;
     int room = g_cols - x - 1;              /* keep the last column free */
     if (y < 0 || y >= g_rows || room < 6)
@@ -1063,6 +1063,7 @@ typedef struct { uint32_t fg, bg, ch; } Cell;
 
 static Cell  *g_cells, *g_prev;
 static int    g_full_redraw;
+static volatile sig_atomic_t g_quit, g_resized;
 static char  *g_out;
 static size_t g_out_len, g_out_cap;
 
@@ -1102,18 +1103,30 @@ static void outf(const char *fmt, ...)
         out(buf, (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1);
 }
 
-static void flush_out(void)
+/* Returns -1 if the terminal is gone. Also runs inside signal handlers: only write() and poll(). */
+static int write_all(const char *s, size_t n)
 {
-    size_t off = 0;
-    while (off < g_out_len) {
-        ssize_t w = write(STDOUT_FILENO, g_out + off, g_out_len - off);
+    while (n > 0) {
+        ssize_t w = write(STDOUT_FILENO, s, n);
         if (w < 0) {
             if (errno == EINTR)
                 continue;
-            break;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {    /* someone else made stdout non-blocking */
+                poll(&(struct pollfd){ STDOUT_FILENO, POLLOUT, 0 }, 1, -1);
+                continue;
+            }
+            return -1;
         }
-        off += (size_t)w;
+        s += w;
+        n -= (size_t)w;
     }
+    return 0;
+}
+
+static void flush_out(void)
+{
+    if (write_all(g_out, g_out_len) < 0)
+        g_quit = 1;                 /* cells that were not sent would stay wrong: stop */
     g_out_len = 0;
 }
 
@@ -1258,7 +1271,6 @@ static void present(float fade)
 static struct termios g_orig_tio, g_raw_tio;
 static int g_have_tty_in;
 static int g_anykey;
-static volatile sig_atomic_t g_quit, g_resized;
 
 /*
  * The terminal helpers below also run inside signal handlers, so they only
@@ -1266,20 +1278,6 @@ static volatile sig_atomic_t g_quit, g_resized;
  * interrupts those calls, so they retry: losing the restore sequence would
  * leave the terminal stuck in the alternate screen.
  */
-static void write_all(const char *s, size_t n)
-{
-    while (n > 0) {
-        ssize_t w = write(STDOUT_FILENO, s, n);
-        if (w < 0) {
-            if (errno == EINTR)
-                continue;
-            return;                 /* the terminal is gone: nothing left to do */
-        }
-        s += w;
-        n -= (size_t)w;
-    }
-}
-
 static void set_tty(int when, const struct termios *tio)
 {
     while (tcsetattr(STDIN_FILENO, when, tio) < 0 && errno == EINTR)
@@ -1396,17 +1394,9 @@ static int locale_is_legacy(const char *all, const char *ctype, const char *lang
     return cs && strncasecmp(cs + 1, "utf-8", 5) && strncasecmp(cs + 1, "utf8", 4);
 }
 
-static void alloc_buffers(void)
+/* Size the pixel and cell buffers for a cols x rows terminal (tests call this directly). */
+static void set_size(int cols, int rows)
 {
-    struct winsize ws;
-    int cols = 80, rows = 24;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0) {
-        cols = ws.ws_col;
-        rows = ws.ws_row;
-        float r = cell_ratio_from(&ws);
-        if (!g_ratio_user && r > 0)     /* measured again on every resize: the font may have changed */
-            g_cell_ratio = r;
-    }
     g_cols = cols;
     g_rows = rows;
     g_pw = cols;
@@ -1423,15 +1413,35 @@ static void alloc_buffers(void)
     g_full_redraw = 1;
 }
 
+static void alloc_buffers(void)
+{
+    struct winsize ws;
+    int cols = 80, rows = 24;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0) {
+        cols = ws.ws_col;
+        rows = ws.ws_row;
+        float r = cell_ratio_from(&ws);
+        if (!g_ratio_user && r > 0)     /* measured again on every resize: the font may have changed */
+            g_cell_ratio = r;
+    }
+    set_size(cols, rows);
+}
+
 /* Returns how many scenes to move: +1 per next key, -1 per previous key. */
 static int poll_keys(int *paused, float *speed)
 {
     unsigned char buf[64];
     if (!g_have_tty_in)
         return 0;
-    ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
+    ssize_t n = read(STDIN_FILENO, buf, sizeof buf - 2);
     if (n <= 0)
         return 0;
+    /* an arrow key split over two reads (slow SSH link): wait briefly for its rest */
+    int missing = buf[n - 1] == 27 ? 2 : n >= 2 && buf[n - 2] == 27 ? 1 : 0;
+    if (missing && poll(&(struct pollfd){ STDIN_FILENO, POLLIN, 0 }, 1, 50) > 0) {
+        ssize_t m = read(STDIN_FILENO, buf + n, (size_t)missing);
+        n += m > 0 ? m : 0;
+    }
     if (g_anykey) {
         g_quit = 1;
         return 0;

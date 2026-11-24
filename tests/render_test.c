@@ -11,16 +11,7 @@
 static void setup(int cols, int rows, int ascii)
 {
     g_ascii = ascii;
-    g_cols = cols;
-    g_rows = rows;
-    g_pw = cols;
-    g_ph = ascii ? rows : rows * 2;
-    g_yasp = ascii ? 0.5f : 1.0f;
-    g_focal = fminf((float)g_pw, g_ph / g_yasp);
-    size_t np = (size_t)g_pw * g_ph;
-    g_color = xrealloc(g_color, np * sizeof *g_color);
-    g_color2 = xrealloc(g_color2, np * sizeof *g_color2);
-    g_id = xrealloc(g_id, np * sizeof *g_id);
+    set_size(cols, rows);
 }
 
 int main(void)

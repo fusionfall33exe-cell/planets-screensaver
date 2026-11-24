@@ -25,19 +25,7 @@ static long errors;
 static void setup(int cols, int rows, int ascii)
 {
     g_ascii = ascii;
-    g_cols = cols;
-    g_rows = rows;
-    g_pw = cols;
-    g_ph = ascii ? rows : rows * 2;
-    g_yasp = ascii ? 0.5f : 1.0f;
-    g_focal = fminf((float)g_pw, g_ph / g_yasp);
-    size_t np = (size_t)g_pw * g_ph, nc = (size_t)cols * rows;
-    g_color = xrealloc(g_color, np * sizeof *g_color);
-    g_color2 = xrealloc(g_color2, np * sizeof *g_color2);
-    g_id = xrealloc(g_id, np * sizeof *g_id);
-    g_cells = xrealloc(g_cells, nc * sizeof *g_cells);
-    g_prev = xrealloc(g_prev, nc * sizeof *g_prev);
-    g_full_redraw = 1;
+    set_size(cols, rows);
 }
 
 /* draw one frame and remember what it was supposed to look like */
