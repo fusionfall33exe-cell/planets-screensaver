@@ -1,7 +1,8 @@
 name: build
 
-on:
+on:     # other branches get CI through a pull request; tags point at commits main already built
   push:
+    branches: [main]
   pull_request:
 
 jobs:
