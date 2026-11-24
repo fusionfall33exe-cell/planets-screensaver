@@ -71,12 +71,11 @@ pty "timeout --foreground -s INT 4 $BIN < /dev/null"
 check "stdin is not a terminal" 124
 
 # --- keys (a KILL guard turns a hang into a failure)
-# Ctrl-\ signals the whole foreground group, including this helper shell and
-# timeout. "trap '' QUIT" ignores it there and in timeout (an ignored signal
-# is inherited; GNU timeout forwards it anyway, the Rust one on newer Ubuntu
-# has no handler and would die with exit 131). planets installs its own handler.
+# Ctrl-\ signals the whole foreground group in the pty, so the guard stays
+# outside it: uutils timeout (newer Ubuntu) returns 131 when it gets SIGQUIT
+# itself. "trap : QUIT" keeps the helper shell alive to print EXIT.
 keys() {                            # keys "input script" [planets options]
-    ( eval "$1" ) | script -qfc "trap '' QUIT; stty rows 30 cols 100; timeout --foreground -s KILL 40 $BIN $2; echo EXIT=\$?" /dev/null > "$OUT" 2>&1
+    ( eval "$1" ) | timeout -s KILL 45 script -qfc "trap : QUIT; stty rows 30 cols 100; $BIN $2; echo EXIT=\$?" /dev/null > "$OUT" 2>&1
 }
 
 keys "sleep 1; printf '\e[C'; sleep 0.3; printf '\e[C\e[C\e[C'; sleep 0.3; printf '\e[D'; sleep 0.3; printf nnbb;
