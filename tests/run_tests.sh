@@ -54,6 +54,19 @@ check "ASCII mode, 256 colors, random order, 120 fps" 124
 pty "timeout --foreground -s INT 4 $BIN -t 0 -s 9 -f 0"
 check "stay on one scene, fps clamped to 1" 124
 
+pty "timeout --foreground -s INT 4 $BIN -y 2.4 -t 1"
+check "-y: custom cell ratio" 124
+
+# --- adapting to the terminal (environment variables as a terminal would set them)
+pty "COLORTERM= TERM_PROGRAM=Apple_Terminal timeout --foreground -s INT 4 $BIN -t 1"
+check "Apple Terminal: 256 colors, half blocks" 124 "grep -aq '38;5;' \$OUT && ! grep -aq '[34]8;2;' \$OUT && grep -aq '▀' \$OUT"
+
+pty "COLORTERM=truecolor TERM_PROGRAM=Apple_Terminal timeout --foreground -s INT 4 $BIN -t 1"
+check "terminal that claims truecolor: 24-bit" 124 "grep -aq '38;2;' \$OUT && ! grep -aq '[34]8;5;' \$OUT"
+
+pty "LC_ALL= LC_CTYPE= LANG=de_AT.ISO-8859-1 timeout --foreground -s INT 4 $BIN -t 1"
+check "non-UTF-8 locale: ASCII shading, no half blocks" 124 "! grep -aq '▀' \$OUT"
+
 pty "timeout --foreground -s INT 4 $BIN < /dev/null"
 check "stdin is not a terminal" 124
 
@@ -68,6 +81,9 @@ keys "sleep 1; printf '\e[C'; sleep 0.3; printf '\e[C\e[C\e[C'; sleep 0.3; print
       sleep 0.3; printf ' '; sleep 0.5; printf ' '; sleep 0.3; printf '++++++++++++'; sleep 0.5; printf -- '-------------------';
       sleep 0.3; printf m; sleep 0.5; printf c; sleep 0.5; printf mc; sleep 0.5; printf xyz123; sleep 0.5; printf q"
 check "all keys, then q" 0
+
+keys "sleep 1; for i in \$(seq 100); do printf '['; done; sleep 0.5; for i in \$(seq 200); do printf ']'; done; sleep 0.5; printf q"
+check "[ and ] stay within the cell ratio limits" 0
 
 keys "sleep 1.5; printf '\e'; sleep 8"
 check "Esc quits" 0
@@ -118,6 +134,10 @@ bad_args=0
 for args in "-s 0" "-s 10" "-z"; do
     "$BIN" $args > /dev/null 2>&1 && bad_args=1
 done
+for ratio in 0 0.99 4.5 x nan; do
+    "$BIN" -y $ratio 2>&1 > /dev/null | grep -q "^Planets: -y needs" || bad_args=1
+done
+"$BIN" -y 2.4 2>&1 | grep -q "^Planets: -y needs" && bad_args=1     # a valid ratio is not rejected
 "$BIN" -h | grep -q "^usage: Planets" || bad_args=1
 "$BIN" > /dev/null 2>&1 && bad_args=1           # stdout is not a terminal
 if [ $bad_args = 0 ]; then

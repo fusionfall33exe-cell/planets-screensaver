@@ -13,7 +13,7 @@ PREFIX  ?= $(HOME)/.local
 # Tests: sanitizer builds of planets and the test programs in tests/
 TESTFLAGS := -std=c11 -O1 -g -pthread -Wall -Wextra
 SANITIZE  := -fsanitize=address,undefined -fno-sanitize-recover=undefined
-TESTBINS  := tests/render_test tests/output_test tests/planets_san tests/render_tsan
+TESTBINS  := tests/render_test tests/output_test tests/term_test tests/planets_san tests/render_tsan
 
 .PHONY: build run install uninstall clean test test-memory test-threads
 
@@ -36,9 +36,10 @@ uninstall:
 # make test: everything. test-memory: AddressSanitizer + UBSan. test-threads: ThreadSanitizer.
 test: test-memory test-threads
 
-test-memory: tests/render_test tests/output_test tests/planets_san
+test-memory: tests/render_test tests/output_test tests/term_test tests/planets_san
 	./tests/render_test
 	./tests/output_test
+	./tests/term_test
 	bash tests/run_tests.sh tests/planets_san
 
 # setarch -R: ThreadSanitizer cannot cope with the address randomization of newer kernels

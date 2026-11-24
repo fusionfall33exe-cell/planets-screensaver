@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <time.h>
@@ -523,6 +524,9 @@ static V3     g_mw_n, g_mw_u, g_mw_v; /* Milky Way plane */
 
 static int    g_ascii;              /* 0 = half-block pixels, 1 = ASCII shading */
 static int    g_256;                /* 256-color palette instead of 24-bit */
+static float  g_cell_ratio = 2.0f;  /* character cell height / width; most fonts are close to 2 */
+static int    g_ratio_user;         /* set by -y and [ ]: stop measuring the terminal */
+static float  g_ratio_msg;          /* seconds left to show the ratio on screen */
 
 static const V3 ZERO = { 0, 0, 0 };
 
@@ -1026,17 +1030,33 @@ typedef struct { int x, y; char text[64]; V3 col; float alpha; } Span;
 static Span g_spans[4];
 static int  g_nspans;
 
-/* Text overlay that fades with alpha; negative x/y count from the right/bottom. */
+/*
+ * Text overlay that fades with alpha; negative x/y count from the right/bottom.
+ * Text that does not fit is cut to "...", and a row that is off screen, too
+ * narrow or already taken (title and fact on a 3-row terminal) gets nothing.
+ */
 static void hud(int x, int y, V3 col, float alpha, const char *text)
 {
     if (g_nspans >= (int)(sizeof g_spans / sizeof g_spans[0]))
         return;
+    x = x < 0 ? g_cols + x : x;
+    y = y < 0 ? g_rows + y : y;
+    int room = g_cols - x - 1;              /* keep the last column free */
+    if (y < 0 || y >= g_rows || room < 6)
+        return;
+    for (int i = 0; i < g_nspans; i++)
+        if (g_spans[i].y == y)
+            return;
     Span *s = &g_spans[g_nspans++];
-    s->x = x < 0 ? g_cols + x : x;
-    s->y = y < 0 ? g_rows + y : y;
+    s->x = x;
+    s->y = y;
     s->col = col;
     s->alpha = alpha;
     snprintf(s->text, sizeof s->text, "%s", text);
+    if ((int)strlen(s->text) > room) {
+        s->text[room] = 0;
+        memcpy(s->text + room - 3, "...", 3);
+    }
 }
 
 typedef struct { uint32_t fg, bg, ch; } Cell;
@@ -1331,6 +1351,51 @@ static void term_setup(void)
     term_grab();
 }
 
+/*
+ * Cell height / width from the terminal's pixel size, or 0 if it does not say
+ * (Windows Terminal and WSL report 0) or the numbers are implausible.
+ * shortcut: the pixel size may include window padding, so it can be a few
+ * percent off; [ ] and -y fix that by hand.
+ */
+static float cell_ratio_from(const struct winsize *ws)
+{
+    if (!ws->ws_col || !ws->ws_row || !ws->ws_xpixel || !ws->ws_ypixel)
+        return 0;
+    float r = ((float)ws->ws_ypixel / ws->ws_row) / ((float)ws->ws_xpixel / ws->ws_col);
+    return r >= 1.2f && r <= 3.5f ? r : 0;
+}
+
+/*
+ * Start in 256 colors only where 24-bit is known to break: terminals that say
+ * so are trusted, Apple's Terminal, GNU screen (tmux sets $TMUX and converts
+ * colors itself) and old VT/rxvt terminals are not. Anything else gets 24-bit,
+ * because Windows Terminal and many others support it without saying so.
+ */
+static int color_256_by_default(const char *colorterm, const char *term, const char *program, int in_tmux)
+{
+    static const char *const old[] = { "vt100", "vt220", "ansi", "rxvt", "dumb" };
+    if (colorterm && (strstr(colorterm, "truecolor") || strstr(colorterm, "24bit")))
+        return 0;
+    if (program && !strcmp(program, "Apple_Terminal"))
+        return 1;
+    if (!term)
+        return 0;
+    if (!strncmp(term, "screen", 6))
+        return !in_tmux;
+    for (size_t i = 0; i < sizeof old / sizeof old[0]; i++)
+        if (!strncmp(term, old[i], strlen(old[i])))
+            return 1;
+    return 0;
+}
+
+/* True if the locale names a charset that is not UTF-8 (de_AT.ISO-8859-1): the half block would print as garbage. */
+static int locale_is_legacy(const char *all, const char *ctype, const char *lang)
+{
+    const char *loc = all && *all ? all : ctype && *ctype ? ctype : lang;
+    const char *cs = loc ? strchr(loc, '.') : NULL;
+    return cs && strncasecmp(cs + 1, "utf-8", 5) && strncasecmp(cs + 1, "utf8", 4);
+}
+
 static void alloc_buffers(void)
 {
     struct winsize ws;
@@ -1338,12 +1403,15 @@ static void alloc_buffers(void)
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0) {
         cols = ws.ws_col;
         rows = ws.ws_row;
+        float r = cell_ratio_from(&ws);
+        if (!g_ratio_user && r > 0)     /* measured again on every resize: the font may have changed */
+            g_cell_ratio = r;
     }
     g_cols = cols;
     g_rows = rows;
     g_pw = cols;
     g_ph = g_ascii ? rows : rows * 2;
-    g_yasp = g_ascii ? 0.5f : 1.0f;     /* a character cell is about twice as tall as wide */
+    g_yasp = (g_ascii ? 1.0f : 2.0f) / g_cell_ratio;   /* 0.5 / 1.0 for the usual 1:2 cell */
     g_focal = fminf((float)g_pw, g_ph / g_yasp);
 
     size_t np = (size_t)g_pw * g_ph, nc = (size_t)cols * rows;
@@ -1391,6 +1459,12 @@ static int poll_keys(int *paused, float *speed)
         case ' ': *paused = !*paused; break;
         case 'm': g_ascii = !g_ascii; alloc_buffers(); break;
         case 'c': g_256 = !g_256; g_full_redraw = 1; break;
+        case '[': case ']':             /* planets too flat: [, too tall: ] */
+            g_cell_ratio = clampf(g_cell_ratio + (c == ']' ? 0.05f : -0.05f), 1.0f, 4.0f);
+            g_ratio_user = 1;
+            g_ratio_msg = 3;
+            alloc_buffers();
+            break;
         case '+': case '=': *speed = fminf(*speed * 1.25f, 8.0f); break;
         case '-': case '_': *speed = fmaxf(*speed / 1.25f, 0.125f); break;
         }
@@ -1417,12 +1491,14 @@ static void usage(FILE *f)
         "  -f FPS   frames per second (default 60; try 30 if it stutters)\n"
         "  -a       ASCII shading instead of half-block pixels\n"
         "  -2       256 colors, for terminals without 24-bit color\n"
+        "  -y RATIO character cell height / width, 1-4 (default: measured, else 2)\n"
         "  -x       screensaver mode: any key quits\n"
         "  -h       show this help\n"
         "\n"
         "Runs forever until you quit or close the terminal.\n"
         "keys: q/Esc/Ctrl-C quit   n/Right next   b/Left previous   space pause\n"
-        "      m ASCII/blocks   c 256/24-bit colors   +/- speed\n");
+        "      m ASCII/blocks   c 256/24-bit colors   +/- speed\n"
+        "      [ ] planets look too flat / too tall (then keep the value with -y)\n");
 }
 
 int main(int argc, char **argv)
@@ -1430,7 +1506,7 @@ int main(int argc, char **argv)
     float scene_len = 25, fps = 60;
     int scene = 0, shuffle = 0, opt;
 
-    while ((opt = getopt(argc, argv, "t:s:rf:a2xh")) != -1) {
+    while ((opt = getopt(argc, argv, "t:s:rf:y:a2xh")) != -1) {
         switch (opt) {
         case 't': scene_len = strtof(optarg, NULL); break;
         case 's':
@@ -1442,6 +1518,14 @@ int main(int argc, char **argv)
             break;
         case 'r': shuffle = 1; break;
         case 'f': fps = strtof(optarg, NULL); break;
+        case 'y':
+            g_cell_ratio = strtof(optarg, NULL);
+            if (!(g_cell_ratio >= 1 && g_cell_ratio <= 4)) {    /* also rejects NaN and text */
+                fprintf(stderr, "Planets: -y needs a ratio from 1 to 4 (cell height / width)\n");
+                return 1;
+            }
+            g_ratio_user = 1;
+            break;
         case 'a': g_ascii = 1; break;
         case '2': g_256 = 1; break;
         case 'x': g_anykey = 1; break;
@@ -1454,6 +1538,11 @@ int main(int argc, char **argv)
         fputs("Planets: stdout is not a terminal\n", stderr);
         return 1;
     }
+    if (!g_256)
+        g_256 = color_256_by_default(getenv("COLORTERM"), getenv("TERM"), getenv("TERM_PROGRAM"),
+                                     getenv("TMUX") != NULL);
+    if (locale_is_legacy(getenv("LC_ALL"), getenv("LC_CTYPE"), getenv("LANG")))
+        g_ascii = 1;
 
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
     g_nthreads = cores < 1 ? 1 : cores > MAXTHREADS ? MAXTHREADS : (int)cores;
@@ -1510,6 +1599,12 @@ int main(int argc, char **argv)
         }
 
         g_nspans = 0;
+        if (g_ratio_msg > 0) {
+            char note[64];
+            g_ratio_msg -= dt;
+            snprintf(note, sizeof note, " cell ratio %.2f  (keep it: -y %.2f) ", g_cell_ratio, g_cell_ratio);
+            hud(1, 2, v3(1.0f, 0.9f, 0.5f), 1.0f, note);
+        }
         float alpha = paused ? 1.0f : smooth(0.3f, 1.3f, st) * (1 - smooth(7.0f, 8.5f, st));
         if (alpha > 0.01f) {
             char label[64];

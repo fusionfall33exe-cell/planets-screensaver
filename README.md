@@ -49,18 +49,28 @@ On Windows, clone it to the Windows side, run `make && make install` there from 
 
 ## Usage
 
-Just run `Planets`. The arrow keys (or `n` and `b`) switch planets, `Space` pauses, `+` and `-` change the speed, and `q` or `Esc` quits. Press `m` for ASCII art and `c` for 256 colors.
+Just run `Planets`. The arrow keys (or `n` and `b`) switch planets, `Space` pauses, `+` and `-` change the speed, and `q` or `Esc` quits. Press `m` for ASCII art and `c` for 256 colors. If the planets look squashed, press `[` or `]` (see [Troubleshooting](#troubleshooting)).
 
 ```
-Planets [-t SEC] [-s N] [-r] [-f FPS] [-a] [-2] [-x]
-  -t SEC   seconds per planet (default 25, 0 = stay on one)
-  -s N     start with scene N (1-9)
-  -r       random order instead of the tour from the Sun outwards
-  -f FPS   frames per second (default 60; try 30 if it stutters)
-  -a       ASCII shading instead of half-block pixels
-  -2       256 colors, for terminals without 24-bit color
-  -x       screensaver mode: any key quits
+Planets [-t SEC] [-s N] [-r] [-f FPS] [-a] [-2] [-y RATIO] [-x]
+  -t SEC    seconds per planet (default 25, 0 = stay on one)
+  -s N      start with scene N (1-9)
+  -r        random order instead of the tour from the Sun outwards
+  -f FPS    frames per second (default 60; try 30 if it stutters)
+  -a        ASCII shading instead of half-block pixels
+  -2        256 colors, for terminals without 24-bit color
+  -y RATIO  character cell height / width, 1-4 (default: measured, else 2)
+  -x        screensaver mode: any key quits
 ```
+
+## Troubleshooting
+
+Planets looks at your terminal when it starts and picks safe settings, but terminals differ a lot.
+
+- **The planets look like ovals.** Fonts and line spacing change the shape of a character cell, and Planets assumes it is twice as tall as wide. Terminals that report their pixel size (most on Linux) are measured automatically; Windows Terminal and WSL are not. Press `]` if the planets look too tall, `[` if they look too flat. The current value is shown on screen: keep it with `-y`, for example `Planets -y 2.2`.
+- **The colors look wrong or blocky.** Planets starts in 256 colors on Apple's Terminal, GNU screen and old VT terminals, and in 24-bit color everywhere else unless the terminal claims `COLORTERM=truecolor`. Press `c` to switch, or start with `-2`.
+- **Garbage characters or empty boxes instead of the picture.** The half-block character is missing from the font, or the terminal is not UTF-8. Planets switches to ASCII shading by itself when the locale names a non-UTF-8 charset; otherwise use `-a`. The same fix helps terminals that draw "ambiguous width" characters double wide, such as some CJK setups.
+- **The text at the top and bottom is cut off.** On narrow terminals the line of facts is shortened with `...` and hidden when there is no room. The picture itself works down to a few characters.
 
 It also works as a real screensaver in tmux. With these two lines in `~/.tmux.conf`, the planets come out after five idle minutes and any key brings your session back:
 
